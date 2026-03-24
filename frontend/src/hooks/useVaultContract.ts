@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
     xdr,
     Address,
@@ -35,6 +35,13 @@ import {
 const EVENTS_PAGE_SIZE = 20;
 
 const server = new SorobanRpc.Server(env.sorobanRpcUrl);
+
+const RECIPIENT_LIST_STORAGE_PREFIX = 'vault_recipient_lists';
+const normalizeRecipientAddress = (recipient: string): string => recipient.trim();
+const dedupeRecipients = (addresses: string[]): string[] => {
+    const normalized = addresses.map(normalizeRecipientAddress).filter((address) => address.length > 0);
+    return Array.from(new Set(normalized));
+};
 
 // Recurring Payment Types
 export interface RecurringPayment {
@@ -194,11 +201,42 @@ interface RawEvent {
 
 export const useVaultContract = () => {
     const { address, isConnected, signTransaction } = useWallet();
+    const recipientStorageKey = `${RECIPIENT_LIST_STORAGE_PREFIX}_${env.contractId}`;
+    const loadRecipientState = useCallback((): { mode: ListMode; whitelist: string[]; blacklist: string[] } => {
+        try {
+            const stored = localStorage.getItem(recipientStorageKey);
+            if (!stored) {
+                return { mode: 'Disabled', whitelist: [], blacklist: [] };
+            }
+            const parsed = JSON.parse(stored) as { mode?: ListMode; whitelist?: string[]; blacklist?: string[] };
+            const mode: ListMode = parsed.mode === 'Whitelist' || parsed.mode === 'Blacklist' ? parsed.mode : 'Disabled';
+            return {
+                mode,
+                whitelist: dedupeRecipients(Array.isArray(parsed.whitelist) ? parsed.whitelist : []),
+                blacklist: dedupeRecipients(Array.isArray(parsed.blacklist) ? parsed.blacklist : []),
+            };
+        } catch {
+            return { mode: 'Disabled', whitelist: [], blacklist: [] };
+        }
+    }, [recipientStorageKey]);
+
+    const initialRecipientState = loadRecipientState();
     const [loading, setLoading] = useState(false);
-    const [recipientListMode, setRecipientListMode] = useState<ListMode>('Disabled');
-    const [whitelistAddresses, setWhitelistAddresses] = useState<string[]>([]);
-    const [blacklistAddresses, setBlacklistAddresses] = useState<string[]>([]);
+    const [recipientListMode, setRecipientListMode] = useState<ListMode>(initialRecipientState.mode);
+    const [whitelistAddresses, setWhitelistAddresses] = useState<string[]>(initialRecipientState.whitelist);
+    const [blacklistAddresses, setBlacklistAddresses] = useState<string[]>(initialRecipientState.blacklist);
     const [proposalComments, setProposalComments] = useState<Record<string, Comment[]>>({});
+
+    useEffect(() => {
+        localStorage.setItem(
+            recipientStorageKey,
+            JSON.stringify({
+                mode: recipientListMode,
+                whitelist: dedupeRecipients(whitelistAddresses),
+                blacklist: dedupeRecipients(blacklistAddresses),
+            }),
+        );
+    }, [recipientListMode, whitelistAddresses, blacklistAddresses, recipientStorageKey]);
 
     const readContractValue = useCallback(async (functionName: string, args: xdr.ScVal[] = []): Promise<unknown> => {
         const source = address ?? env.contractId;
@@ -925,12 +963,28 @@ export const useVaultContract = () => {
 
     const getListMode = useCallback(async (): Promise<ListMode> => recipientListMode, [recipientListMode]);
     const setListMode = useCallback(async (mode: ListMode): Promise<void> => { setRecipientListMode(mode); }, []);
-    const addToWhitelist = useCallback(async (recipient: string): Promise<void> => { setWhitelistAddresses((prev) => (prev.includes(recipient) ? prev : [...prev, recipient])); }, []);
-    const removeFromWhitelist = useCallback(async (recipient: string): Promise<void> => { setWhitelistAddresses((prev) => prev.filter((a) => a !== recipient)); }, []);
-    const addToBlacklist = useCallback(async (recipient: string): Promise<void> => { setBlacklistAddresses((prev) => (prev.includes(recipient) ? prev : [...prev, recipient])); }, []);
-    const removeFromBlacklist = useCallback(async (recipient: string): Promise<void> => { setBlacklistAddresses((prev) => prev.filter((a) => a !== recipient)); }, []);
+    const addToWhitelist = useCallback(async (recipient: string): Promise<void> => {
+        const normalized = normalizeRecipientAddress(recipient);
+        if (!normalized) return;
+        setWhitelistAddresses((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    }, []);
+    const removeFromWhitelist = useCallback(async (recipient: string): Promise<void> => {
+        const normalized = normalizeRecipientAddress(recipient);
+        setWhitelistAddresses((prev) => prev.filter((a) => a !== normalized));
+    }, []);
+    const addToBlacklist = useCallback(async (recipient: string): Promise<void> => {
+        const normalized = normalizeRecipientAddress(recipient);
+        if (!normalized) return;
+        setBlacklistAddresses((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    }, []);
+    const removeFromBlacklist = useCallback(async (recipient: string): Promise<void> => {
+        const normalized = normalizeRecipientAddress(recipient);
+        setBlacklistAddresses((prev) => prev.filter((a) => a !== normalized));
+    }, []);
     const isWhitelisted = useCallback(async (recipient: string): Promise<boolean> => whitelistAddresses.includes(recipient), [whitelistAddresses]);
     const isBlacklisted = useCallback(async (recipient: string): Promise<boolean> => blacklistAddresses.includes(recipient), [blacklistAddresses]);
+    const getWhitelistAddresses = useCallback(async (): Promise<string[]> => [...whitelistAddresses], [whitelistAddresses]);
+    const getBlacklistAddresses = useCallback(async (): Promise<string[]> => [...blacklistAddresses], [blacklistAddresses]);
 
     /**
      * Derive proposals from on-chain events.
@@ -1214,7 +1268,7 @@ export const useVaultContract = () => {
         addComment, editComment, getProposalComments,
         getListMode, setListMode,
         addToWhitelist, removeFromWhitelist, addToBlacklist, removeFromBlacklist,
-        isWhitelisted, isBlacklisted,
+        isWhitelisted, isBlacklisted, getWhitelistAddresses, getBlacklistAddresses,
         getVaultConfig,
         getTokenBalances,
         getPortfolioValue,
