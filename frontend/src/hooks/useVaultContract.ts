@@ -80,6 +80,11 @@ export interface VaultConfig {
     isCurrentUserSigner: boolean;
 }
 
+export interface RoleAssignment {
+    address: string;
+    role: number;
+}
+
 interface StellarBalance {
     asset_type: string;
     balance: string;
@@ -178,6 +183,23 @@ function parseBigIntString(value: unknown): string {
 function parseSignerAddresses(value: unknown): string[] {
     if (!Array.isArray(value)) return [];
     return value.map((item) => addressToNative(item)).filter((item) => item.length > 0);
+}
+
+function parseRoleAssignments(value: unknown): RoleAssignment[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((item) => {
+            if (item == null || typeof item !== 'object') return null;
+            const record = item as Record<string, unknown>;
+            const addressValue = record.address ?? record.addr;
+            const roleValue = record.role;
+            const address = addressToNative(addressValue);
+            const role = parseNumericValue(roleValue);
+            if (!address || !isValidStellarAddress(address)) return null;
+            if (![0, 1, 2].includes(role)) return null;
+            return { address, role };
+        })
+        .filter((assignment): assignment is RoleAssignment => assignment != null);
 }
 
 interface RawEvent {
@@ -382,7 +404,7 @@ export const useVaultContract = () => {
 
         // Fallback: derive signer count from Horizon account data
         let fallbackSignerCount = 0;
-        let fallbackThreshold = 0;
+        const fallbackThreshold = 0;
         try {
             const accountInfo = await server.getAccount(env.contractId) as unknown as { signers?: Array<unknown> };
             fallbackSignerCount = Array.isArray(accountInfo.signers) ? accountInfo.signers.length : 0;
@@ -1398,10 +1420,99 @@ export const useVaultContract = () => {
                 }
             } catch { /* ignore */ }
         },
-        getAllRoles: async () => [],
-        setRole: async () => { },
+        getAllRoles: async (): Promise<RoleAssignment[]> => {
+            const result = await readContractValue('get_role_assignments');
+            return parseRoleAssignments(result);
+        },
+        setRole: async (targetAddress: string, nextRole: number): Promise<string> => {
+            if (!isConnected || !address) throw new Error("Wallet not connected");
+            const normalizedAddress = targetAddress.trim();
+            if (!isValidStellarAddress(normalizedAddress)) {
+                throw new Error('Invalid Stellar address');
+            }
+            if (![0, 1, 2].includes(nextRole)) {
+                throw new Error('Invalid role selected');
+            }
+
+            setLoading(true);
+            try {
+                const account = await server.getAccount(address);
+                const tx = new TransactionBuilder(account, { fee: "100" })
+                    .setNetworkPassphrase(env.networkPassphrase)
+                    .setTimeout(30)
+                    .addOperation(Operation.invokeHostFunction({
+                        func: xdr.HostFunction.hostFunctionTypeInvokeContract(
+                            new xdr.InvokeContractArgs({
+                                contractAddress: Address.fromString(env.contractId).toScAddress(),
+                                functionName: "set_role",
+                                args: [
+                                    new Address(address).toScVal(),
+                                    new Address(normalizedAddress).toScVal(),
+                                    nativeToScVal(BigInt(nextRole), { type: "u32" }),
+                                ],
+                            })
+                        ),
+                        auth: [],
+                    }))
+                    .build();
+                const simulation = await server.simulateTransaction(tx);
+                if (SorobanRpc.Api.isSimulationError(simulation)) throw new Error(`Simulation Failed: ${simulation.error}`);
+                const preparedTx = SorobanRpc.assembleTransaction(tx, simulation).build();
+                const signedXdr = await signTransaction(preparedTx.toXDR(), { network: env.stellarNetwork });
+                const response = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr as string, env.networkPassphrase));
+                return response.hash;
+            } catch (e: unknown) {
+                throw parseError(e);
+            } finally {
+                setLoading(false);
+            }
+        },
         getUserRole,
-        assignRole: async () => { },
+        assignRole: async (targetAddress: string, nextRole: number): Promise<string> => {
+            return await (async () => {
+                if (!isConnected || !address) throw new Error("Wallet not connected");
+                const normalizedAddress = targetAddress.trim();
+                if (!isValidStellarAddress(normalizedAddress)) {
+                    throw new Error('Invalid Stellar address');
+                }
+                if (![0, 1, 2].includes(nextRole)) {
+                    throw new Error('Invalid role selected');
+                }
+
+                setLoading(true);
+                try {
+                    const account = await server.getAccount(address);
+                    const tx = new TransactionBuilder(account, { fee: "100" })
+                        .setNetworkPassphrase(env.networkPassphrase)
+                        .setTimeout(30)
+                        .addOperation(Operation.invokeHostFunction({
+                            func: xdr.HostFunction.hostFunctionTypeInvokeContract(
+                                new xdr.InvokeContractArgs({
+                                    contractAddress: Address.fromString(env.contractId).toScAddress(),
+                                    functionName: "set_role",
+                                    args: [
+                                        new Address(address).toScVal(),
+                                        new Address(normalizedAddress).toScVal(),
+                                        nativeToScVal(BigInt(nextRole), { type: "u32" }),
+                                    ],
+                                })
+                            ),
+                            auth: [],
+                        }))
+                        .build();
+                    const simulation = await server.simulateTransaction(tx);
+                    if (SorobanRpc.Api.isSimulationError(simulation)) throw new Error(`Simulation Failed: ${simulation.error}`);
+                    const preparedTx = SorobanRpc.assembleTransaction(tx, simulation).build();
+                    const signedXdr = await signTransaction(preparedTx.toXDR(), { network: env.stellarNetwork });
+                    const response = await server.sendTransaction(TransactionBuilder.fromXDR(signedXdr as string, env.networkPassphrase));
+                    return response.hash;
+                } catch (e: unknown) {
+                    throw parseError(e);
+                } finally {
+                    setLoading(false);
+                }
+            })();
+        },
         updateSpendingLimits,
         getProposals,
     };

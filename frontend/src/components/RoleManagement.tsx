@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Shield, UserPlus, Search, Users } from 'lucide-react';
 import { useVaultContract } from '../hooks/useVaultContract';
 import { useToast } from '../hooks/useToast';
@@ -29,6 +29,7 @@ const RoleManagement: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [newAddress, setNewAddress] = useState('');
   const [selectedRole, setSelectedRole] = useState<number>(0);
+  const [isRefreshingRoles, setIsRefreshingRoles] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     type: 'assign' | 'change' | 'revoke';
@@ -37,11 +38,8 @@ const RoleManagement: React.FC = () => {
     newRole?: number;
   }>({ isOpen: false, type: 'assign' });
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    setIsRefreshingRoles(true);
     try {
       const role = await getUserRole();
       setCurrentUserRole(role);
@@ -52,20 +50,28 @@ const RoleManagement: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to load role data:', error);
+      notify("config_updated", "Failed to load role assignments", "error");
+    } finally {
+      setIsRefreshingRoles(false);
     }
-  };
+  }, [getAllRoles, getUserRole, notify]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const validateStellarAddress = (addr: string): boolean => {
     return /^G[A-Z0-9]{55}$/.test(addr);
   };
 
   const handleAssignRole = () => {
-    if (!validateStellarAddress(newAddress)) {
+    const normalizedAddress = newAddress.trim().toUpperCase();
+    if (!validateStellarAddress(normalizedAddress)) {
       notify("config_updated", "Invalid Stellar address format", "error");
       return;
     }
 
-    const existing = roleAssignments.find(r => r.address === newAddress);
+    const existing = roleAssignments.find(r => r.address === normalizedAddress);
     if (existing) {
       notify("config_updated", "Address already has a role. Use Change Role instead.", "info");
       return;
@@ -74,7 +80,7 @@ const RoleManagement: React.FC = () => {
     setConfirmModal({
       isOpen: true,
       type: 'assign',
-      address: newAddress,
+      address: normalizedAddress,
       newRole: selectedRole
     });
   };
@@ -105,10 +111,10 @@ const RoleManagement: React.FC = () => {
       if (!address) return;
 
       if (type === 'revoke') {
-        await setRole?.();
+        await setRole?.(address, 0);
         notify('config_updated', 'Role revoked successfully', 'success');
       } else {
-        await setRole?.();
+        await setRole?.(address, confirmModal.newRole ?? 0);
         notify('config_updated', `Role ${type === 'assign' ? 'assigned' : 'changed'} successfully`, 'success');
       }
 
@@ -210,10 +216,10 @@ const RoleManagement: React.FC = () => {
         </div>
         <button
           onClick={handleAssignRole}
-          disabled={loading || !newAddress}
+          disabled={loading || isRefreshingRoles || !newAddress.trim()}
           className="mt-4 w-full md:w-auto px-6 py-2.5 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors min-h-[44px]"
         >
-          Assign Role
+          {loading ? 'Submitting...' : 'Assign Role'}
         </button>
       </div>
 
@@ -236,7 +242,9 @@ const RoleManagement: React.FC = () => {
           </div>
         </div>
 
-        {filteredAssignments.length === 0 ? (
+        {isRefreshingRoles ? (
+          <p className="text-center text-gray-400 py-8">Loading role assignments...</p>
+        ) : filteredAssignments.length === 0 ? (
           <p className="text-center text-gray-400 py-8">No role assignments found.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -265,12 +273,14 @@ const RoleManagement: React.FC = () => {
                       <div className="flex justify-end gap-2">
                         <button
                           onClick={() => handleChangeRole(assignment.address, assignment.role)}
+                          disabled={loading}
                           className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors min-h-[36px] min-w-[36px]"
                         >
                           Change
                         </button>
                         <button
                           onClick={() => handleRevokeRole(assignment.address, assignment.role)}
+                          disabled={loading}
                           className="px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-400 text-sm rounded-lg transition-colors min-h-[36px] min-w-[36px]"
                         >
                           Revoke
