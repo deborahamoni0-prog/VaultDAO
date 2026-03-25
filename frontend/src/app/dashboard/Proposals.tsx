@@ -62,7 +62,6 @@ const Proposals: React.FC = () => {
   const { rejectProposal, approveProposal, getTokenBalances } = useVaultContract();
   const { address } = useWallet();
   const { isReady, checkReady } = useActionReadiness();
-  const { subscribe, updatePresence } = useRealtime();
   const { subscribe, updatePresence, connectionStatus, trackEvent } = useRealtime();
 
   const {
