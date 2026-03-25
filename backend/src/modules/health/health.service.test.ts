@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildHealthPayload, buildStatusPayload } from "./health.service.js";
+import {
+  buildHealthPayload,
+  buildReadinessPayload,
+  buildStatusPayload,
+} from "./health.service.js";
 
 const mockEnv = {
   port: 8787,
@@ -12,6 +16,10 @@ const mockEnv = {
   horizonUrl: "https://horizon-testnet.stellar.org",
   contractId: "CDTEST",
   websocketUrl: "ws://localhost:8080",
+};
+
+const mockRuntime = {
+  startedAt: "2026-03-25T00:00:00.000Z",
 };
 
 test("builds a healthy service payload", () => {
@@ -30,4 +38,24 @@ test("builds a status payload", () => {
   assert.equal(payload.service, "vaultdao-backend");
   assert.equal(payload.environment, "test");
   assert.match(payload.rpcUrl, /soroban-testnet/);
+});
+
+test("builds a readiness payload with dependency checks", () => {
+  const payload = buildReadinessPayload(mockEnv, mockRuntime);
+
+  assert.equal(payload.ready, true);
+  assert.equal(payload.service, "vaultdao-backend");
+  assert.equal(payload.checks.app.status, "ready");
+  assert.equal(payload.checks.app.checked, true);
+  assert.equal(payload.checks.rpc.status, "ready");
+  assert.equal(payload.checks.rpc.configured, true);
+  assert.equal(payload.checks.rpc.checked, false);
+  assert.match(payload.checks.rpc.details, /no live connectivity check/i);
+  assert.equal(payload.checks.websocket.status, "ready");
+  assert.equal(payload.checks.websocket.configured, true);
+  assert.equal(payload.checks.websocket.checked, false);
+  assert.equal(payload.checks.storage.status, "ready");
+  assert.equal(payload.checks.storage.configured, false);
+  assert.equal(payload.checks.storage.checked, false);
+  assert.equal(typeof payload.uptimeSeconds, "number");
 });

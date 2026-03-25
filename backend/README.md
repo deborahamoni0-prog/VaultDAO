@@ -46,3 +46,9 @@ src/
       health.service.ts
       health.service.test.ts
 ```
+
+## Current Endpoints
+
+- `GET /health`
+- `GET /ready`
+- `GET /api/v1/status`
